@@ -1512,5 +1512,112 @@ describe('FallbackList', () => {
       expect(cards.length).toBe(2);
       expect(Array.from(cards).every((c) => c.draggable === false)).toBe(true);
     });
+
+    // cubic-dev-ai flagged (PR #2841): while a reorder is pending, the lock
+    // above disabled only `draggable`. The remove button, key-pin chip, and
+    // Add fallback button on the *other* (non-moved) rows stayed clickable,
+    // so each could fire its own independent `persistSet`/`persistClear`
+    // call concurrently with the reorder's still-in-flight one. Whichever
+    // response lands last wins and silently clobbers the other write. These
+    // three specs pin the fix: every fallback-mutating control is disabled
+    // for the duration of a pending reorder, not just dragging.
+    it('disables the remove button on other rows while a reorder is pending', async () => {
+      mockSetFallbacks.mockReturnValueOnce(new Promise(() => {})); // never resolves
+      const { container } = render(() => (
+        <FallbackList {...defaultProps} fallbacks={['model-a', 'model-b', 'model-c']} />
+      ));
+
+      dropFirstCardLast(container);
+
+      await waitFor(() => {
+        expect(container.querySelectorAll('.fallback-list__card--swapping').length).toBe(1);
+      });
+
+      // model-b (index 1) never moves and isn't the pending row, so absent a
+      // fix its remove button would still be enabled.
+      const removeButtons = container.querySelectorAll<HTMLButtonElement>('.fallback-list__remove');
+      expect(removeButtons.length).toBeGreaterThan(0);
+      removeButtons.forEach((btn) => {
+        expect(btn.disabled).toBe(true);
+        fireEvent.click(btn);
+      });
+
+      // No remove-triggered persistSet/persistClear fired while locked; the
+      // only in-flight call is the reorder's own (still-unresolved) one.
+      expect(mockSetFallbacks).toHaveBeenCalledTimes(1);
+      expect(mockClearFallbacks).not.toHaveBeenCalled();
+    });
+
+    it('disables the Add fallback button while a reorder is pending', async () => {
+      mockSetFallbacks.mockReturnValueOnce(new Promise(() => {}));
+      const onAddFallback = vi.fn();
+      const { container } = render(() => (
+        <FallbackList
+          {...defaultProps}
+          fallbacks={['model-a', 'model-b']}
+          onAddFallback={onAddFallback}
+        />
+      ));
+
+      dropFirstCardLast(container);
+
+      await waitFor(() => {
+        expect(container.querySelectorAll('.fallback-list__card--swapping').length).toBe(1);
+      });
+
+      const addButton = container.querySelector<HTMLButtonElement>('.fallback-list__add')!;
+      expect(addButton.disabled).toBe(true);
+      fireEvent.click(addButton);
+      expect(onAddFallback).not.toHaveBeenCalled();
+    });
+
+    it('disables the key-pin chip on other rows while a reorder is pending', async () => {
+      mockSetFallbacks.mockReturnValueOnce(new Promise(() => {}));
+      const multiKeyConnectedProviders = [
+        {
+          id: 'p1',
+          provider: 'openai',
+          auth_type: 'api_key',
+          is_active: true,
+          has_api_key: true,
+          label: 'Personal',
+          priority: 0,
+          key_prefix: 'sk-pers-',
+        },
+        {
+          id: 'p2',
+          provider: 'openai',
+          auth_type: 'api_key',
+          is_active: true,
+          has_api_key: true,
+          label: 'Work',
+          priority: 1,
+          key_prefix: 'sk-work-',
+        },
+      ] as any[];
+      // The test double for `onUpdate` doesn't feed the reorder back into
+      // props (unlike the real parent), so the list keeps its original DOM
+      // order and only `reorderingIndex` (always the last slot here, index 1
+      // for a 2-row list) flags a row pending. Put the multi-key model
+      // ('model-a', OpenAI) at index 0 so it stays a *non-pending* row,
+      // exactly the row the bug left clickable mid-reorder.
+      const { container } = render(() => (
+        <FallbackList
+          {...defaultProps}
+          fallbacks={['model-a', 'model-b']}
+          connectedProviders={multiKeyConnectedProviders}
+        />
+      ));
+
+      dropFirstCardLast(container);
+
+      await waitFor(() => {
+        expect(container.querySelectorAll('.fallback-list__card--swapping').length).toBe(1);
+      });
+
+      const chip = container.querySelector<HTMLButtonElement>('.fallback-list__key-chip');
+      expect(chip).not.toBeNull();
+      expect(chip!.disabled).toBe(true);
+    });
   });
 });

@@ -122,7 +122,11 @@ const FallbackList: Component<FallbackListProps> = (props) => {
   /**
    * True while any drag-initiated update for this tier is in flight. Rows stay
    * put until it resolves, so a retry-because-nothing-happened drag can't fire
-   * a second overlapping write against the same tier.
+   * a second overlapping write against the same tier. Also gates every other
+   * fallback mutation (remove, key-pin, add) for the duration: each of those
+   * persists the full fallback list independently, so one firing while a
+   * reorder's `persistSet` is still in flight is a race, and whichever
+   * response lands last silently overwrites the other's write.
    */
   const dragLocked = (): boolean => props.swappingIndex != null || reorderingIndex() !== null;
 
@@ -522,6 +526,7 @@ const FallbackList: Component<FallbackListProps> = (props) => {
                           }
                           buttonClass="fallback-list__key-chip"
                           allowClear
+                          disabled={dragLocked()}
                           onPick={(label) => setLabelAt(i(), label)}
                         />
                       </Show>
@@ -550,7 +555,7 @@ const FallbackList: Component<FallbackListProps> = (props) => {
                         onClick={() => handleRemove(i())}
                         title="Remove fallback"
                         aria-label={`Remove ${modelLabel(model())}`}
-                        disabled={removingIndex() !== null}
+                        disabled={removingIndex() !== null || dragLocked()}
                       >
                         {removingIndex() === i() ? (
                           <span class="spinner" style="width: 10px; height: 10px;" />
@@ -615,7 +620,7 @@ const FallbackList: Component<FallbackListProps> = (props) => {
           <button
             class="btn btn--outline btn--sm fallback-list__add"
             onClick={props.onAddFallback}
-            disabled={props.adding || removingIndex() !== null}
+            disabled={props.adding || removingIndex() !== null || dragLocked()}
           >
             {props.adding ? (
               <span class="spinner" />
