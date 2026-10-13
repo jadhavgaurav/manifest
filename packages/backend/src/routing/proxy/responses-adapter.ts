@@ -463,9 +463,16 @@ function toResponsesUsage(usage: unknown): JsonRecord | null {
   };
 }
 
+// The three events that end a Responses stream; each carries the final snapshot.
+const RESPONSES_TERMINAL_EVENTS: ReadonlySet<string> = new Set([
+  'response.completed',
+  'response.incomplete',
+  'response.failed',
+]);
+
 export function collectResponsesSseResponse(sseText: string): JsonRecord {
   let text = '';
-  let completed: JsonRecord | null = null;
+  let terminal: JsonRecord | null = null;
   // Track function_call output items emitted incrementally. Keyed by
   // `output_index` so a tool call can sit at any position in a mixed-output
   // stream (e.g. assistant message + function_call). Some Codex Responses
@@ -531,14 +538,14 @@ export function collectResponsesSseResponse(sseText: string): JsonRecord {
         // partial state we accumulated from `added` + delta events.
         functionCalls.set(idx, item);
       }
-    } else if (parsed.event === 'response.completed') {
+    } else if (RESPONSES_TERMINAL_EVENTS.has(parsed.event)) {
       const data = safeParse(parsed.data);
-      completed = isRecord(data?.response) ? data.response : null;
+      terminal = isRecord(data?.response) ? data.response : null;
     }
   }
 
-  if (completed) {
-    let result = withCollectedTextOutput(completed, text);
+  if (terminal) {
+    let result = withCollectedTextOutput(terminal, text);
     if (functionCalls.size > 0) {
       result = withCollectedFunctionCalls(result, functionCalls);
     }
@@ -598,7 +605,7 @@ function withCollectedTextOutput(response: JsonRecord, text: string): JsonRecord
       {
         type: 'message',
         id: `msg_${randomUUID().replace(/-/g, '')}`,
-        status: 'completed',
+        status: response.status === 'incomplete' ? 'incomplete' : 'completed',
         role: 'assistant',
         content: [{ type: 'output_text', text, annotations: [] }],
       },
@@ -800,7 +807,6 @@ function emitOutputTextDelta(state: ResponsesStreamState, delta: string): string
 }
 
 function emitRefusalDelta(state: ResponsesStreamState, delta: string): string[] {
-  if (!delta) return [];
   const opened = emitPartOpen(state, state.refusalPartIndex, { type: 'refusal', refusal: '' });
   state.refusalPartIndex = opened.index;
   state.refusal += delta;
@@ -1024,11 +1030,12 @@ function finalizeResponsesStream(state: ResponsesStreamState): string | null {
   // finished — fromChatCompletionResponse defaults it to `created`.
   if (!reason) response.completed_at = Math.floor(Date.now() / 1000);
   if (state.itemOpened && Array.isArray(response.output)) {
-    const message = response.output.find((item) => isRecord(item) && item.type === 'message');
-    if (isRecord(message)) {
-      message.id = state.itemId;
-      message.content = parts;
-    }
+    // An opened item always has text or refusal, so the message is present.
+    const message = response.output.find(
+      (item) => isRecord(item) && item.type === 'message',
+    ) as JsonRecord;
+    message.id = state.itemId;
+    message.content = parts;
   }
 
   const output = (response.output as JsonRecord[]).map((item) => ({

@@ -976,6 +976,71 @@ describe('Responses adapter', () => {
       ]);
     });
 
+    it('keeps the response.incomplete snapshot instead of reporting it as completed', () => {
+      const response = {
+        id: 'resp_1',
+        object: 'response',
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+      };
+      const result = collectResponsesSseResponse(
+        [
+          'event: response.output_text.delta\ndata: {"delta":"Cut"}',
+          `event: response.incomplete\ndata: ${JSON.stringify({ response })}`,
+          '',
+        ].join('\n\n'),
+      );
+
+      expect(result).toMatchObject({
+        id: 'resp_1',
+        status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' },
+        usage: { total_tokens: 3 },
+      });
+      expect(result.output).toEqual([
+        expect.objectContaining({
+          type: 'message',
+          status: 'incomplete',
+          content: [{ type: 'output_text', text: 'Cut', annotations: [] }],
+        }),
+      ]);
+    });
+
+    it('keeps the response.failed snapshot and its error', () => {
+      const response = {
+        id: 'resp_1',
+        object: 'response',
+        status: 'failed',
+        error: { code: 'server_error', message: 'upstream broke' },
+        output: [],
+        usage: null,
+      };
+      const result = collectResponsesSseResponse(
+        `event: response.failed\ndata: ${JSON.stringify({ response })}\n\n`,
+      );
+
+      expect(result).toEqual(response);
+    });
+
+    it('falls back to collected text when a terminal event carries no response object', () => {
+      const result = collectResponsesSseResponse(
+        [
+          'event: response.output_text.delta\ndata: {"delta":"Hi"}',
+          'event: response.incomplete\ndata: {}',
+          '',
+        ].join('\n\n'),
+      );
+
+      expect(result.status).toBe('completed');
+      expect(result.output).toEqual([
+        expect.objectContaining({
+          content: [{ type: 'output_text', text: 'Hi', annotations: [] }],
+        }),
+      ]);
+    });
+
     it('falls back to collected output text and ignores malformed events', () => {
       const result = collectResponsesSseResponse(
         [
